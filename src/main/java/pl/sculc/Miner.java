@@ -35,13 +35,12 @@ public class Miner {
     /** Kucanie podczas pracy (wolniejsze chodzenie, ale nie spadniesz z krawedzi). */
     private static final boolean SNEAK = false;
 
+    /** Czy obracac kamere w strone kopanego bloku (domyslnie NIE - zadnego krecenia). */
+    private static final boolean LOOK_AT_BLOCK = false;
+
     private BlockPos current;
     private boolean headingToPos2;
-    private boolean minedThisLeg;
-    private int idleLegs;
-    private int tickCounter;
     private int stuckTicks;
-    private int idleTicks;
     private Vec3d lastPos = Vec3d.ZERO;
 
     public String blockNames() {
@@ -71,17 +70,13 @@ public class Miner {
             return;
         }
         current = null;
-        minedThisLeg = true;
-        idleLegs = 0;
-        tickCounter = 0;
         stuckTicks = 0;
-        idleTicks = 0;
         // zacznij od isc do dalszego konca trasy
         Vec3d pp = mc.player.getPos();
         headingToPos2 = Vec3d.ofCenter(pos2).squaredDistanceTo(pp.x, Vec3d.ofCenter(pos2).y, pp.z)
                 >= Vec3d.ofCenter(pos1).squaredDistanceTo(pp.x, Vec3d.ofCenter(pos1).y, pp.z);
         running = true;
-        msg(mc, "START. Kopie: " + blockNames());
+        msg(mc, "START (dziala ciagle, wylaczysz przez /sculc-stop). Kopie: " + blockNames());
     }
 
     public void stop(MinecraftClient mc, String why) {
@@ -101,6 +96,7 @@ public class Miner {
         ClientWorld w = mc.world;
         if (p == null || w == null || mc.interactionManager == null) {
             running = false;
+            releaseKeys(mc);
             return;
         }
         if (mc.currentScreen != null) {
@@ -113,9 +109,7 @@ public class Miner {
         // 1) cos do wykopania w zasiegu? -> stoj i kop
         BlockPos target = findInReach(w, p);
         if (target != null) {
-            mc.options.forwardKey.setPressed(false);
-            minedThisLeg = true;
-            idleTicks = 0;
+            releaseMove(mc);
             stuckTicks = 0;
             mine(mc, p, w, target);
             return;
@@ -124,21 +118,13 @@ public class Miner {
         if (mc.interactionManager.isBreakingBlock()) mc.interactionManager.cancelBlockBreaking();
         current = null;
 
-        // 2) czy w ogole cos zostalo w terenie?
-        if (tickCounter++ % 20 == 0 && !anyTargetLeft(w)) {
-            stop(mc, "Gotowe! Nie ma wiecej blokow do wykopania.");
-            return;
-        }
-
-        // trasa o dlugosci 0 -> stoimy w miejscu
+        // 2) nic do kopania -> chodz po trasie (A/D), nigdy sie nie wylaczaj
         boolean noPath = pos1.getX() == pos2.getX() && pos1.getZ() == pos2.getZ();
         if (noPath) {
-            mc.options.forwardKey.setPressed(false);
-            if (++idleTicks > 100) stop(mc, "Zostaly bloki poza zasiegiem. Zatrzymano.");
+            releaseMove(mc);
             return;
         }
 
-        // 3) idz lewo/prawo po trasie
         boolean alongX = Math.abs(pos1.getX() - pos2.getX()) >= Math.abs(pos1.getZ() - pos2.getZ());
         Vec3d end = Vec3d.ofCenter(headingToPos2 ? pos2 : pos1);
         double dx = end.x - p.getX();
@@ -146,27 +132,30 @@ public class Miner {
         double remaining = alongX ? Math.abs(dx) : Math.abs(dz);
 
         if (remaining < 0.3) {
-            // doszlismy do konca trasy -> zawroc
-            mc.options.forwardKey.setPressed(false);
-            idleLegs = minedThisLeg ? 0 : idleLegs + 1;
-            minedThisLeg = false;
-            if (idleLegs >= 2) {
-                stop(mc, "Reszta blokow jest poza zasiegiem trasy. Zatrzymano.");
-                return;
-            }
+            // koniec trasy -> zawroc
             headingToPos2 = !headingToPos2;
+            stuckTicks = 0;
             return;
         }
 
-        float yaw = alongX ? (dx > 0 ? -90f : 90f) : (dz > 0 ? 0f : 180f);
-        p.setYaw(yaw);
-        p.setPitch(20f);
-        mc.options.forwardKey.setPressed(true);
+        // kierunek ruchu po swiecie (tylko wzdluz trasy)
+        double mx = alongX ? Math.signum(dx) : 0;
+        double mz = alongX ? 0 : Math.signum(dz);
 
+        // rozloz na przod/tyl i lewo/prawo wzgledem tego, jak patrzy gracz (bez obracania kamery)
+        double yawRad = Math.toRadians(p.getYaw());
+        double fwd = mx * (-Math.sin(yawRad)) + mz * Math.cos(yawRad);
+        double right = mx * (-Math.cos(yawRad)) + mz * (-Math.sin(yawRad));
+        mc.options.forwardKey.setPressed(fwd > 0.3);
+        mc.options.backKey.setPressed(fwd < -0.3);
+        mc.options.rightKey.setPressed(right > 0.3);   // D
+        mc.options.leftKey.setPressed(right < -0.3);   // A
+
+        // utknal? zawroc zamiast sie wylaczac
         if (p.getPos().squaredDistanceTo(lastPos) < 0.0004) {
             if (++stuckTicks > 60) {
-                stop(mc, "Utknal - zatrzymano.");
-                return;
+                headingToPos2 = !headingToPos2;
+                stuckTicks = 0;
             }
         } else {
             stuckTicks = 0;
@@ -186,7 +175,9 @@ public class Miner {
             selectBestTool(p, w.getBlockState(target));
         }
 
-        lookAt(p, Vec3d.ofCenter(target).add(face.getOffsetX() * 0.5, face.getOffsetY() * 0.5, face.getOffsetZ() * 0.5));
+        if (LOOK_AT_BLOCK) {
+            lookAt(p, Vec3d.ofCenter(target).add(face.getOffsetX() * 0.5, face.getOffsetY() * 0.5, face.getOffsetZ() * 0.5));
+        }
 
         if (mc.interactionManager.updateBlockBreakingProgress(target, face)) {
             p.swingHand(Hand.MAIN_HAND);
@@ -261,18 +252,6 @@ public class Miner {
         return best;
     }
 
-    private boolean anyTargetLeft(ClientWorld w) {
-        int[] b = bounds();
-        BlockPos.Mutable m = new BlockPos.Mutable();
-        for (int x = b[0]; x <= b[1]; x++)
-            for (int y = b[2]; y <= b[3]; y++)
-                for (int z = b[4]; z <= b[5]; z++) {
-                    m.set(x, y, z);
-                    if (isTarget(w, m)) return true;
-                }
-        return false;
-    }
-
     private Direction exposedFace(ClientWorld w, BlockPos pos, Vec3d eye) {
         Direction best = null;
         double bestD = Double.MAX_VALUE;
@@ -292,8 +271,16 @@ public class Miner {
 
     // ---------------------------------------------------------------- pomocnicze
 
-    private void releaseKeys(MinecraftClient mc) {
+    private void releaseMove(MinecraftClient mc) {
         mc.options.forwardKey.setPressed(false);
+        mc.options.backKey.setPressed(false);
+        mc.options.leftKey.setPressed(false);
+        mc.options.rightKey.setPressed(false);
+    }
+
+    private void releaseKeys(MinecraftClient mc) {
+        if (mc == null || mc.options == null) return;
+        releaseMove(mc);
         mc.options.sneakKey.setPressed(false);
     }
 
