@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "sculc",
+  "version": "${version}",
+  "name": "Sculc Miner",
+  "description": "Stoi w miejscu, chodzi w lewo/prawo i kopie wybrane bloki w zaznaczonym terenie. Automatycznie zmienia narzedzia.",
+  "authors": ["Ty"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["pl.sculc.SculcMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.10",
+    "minecraft": "~1.21.4",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
